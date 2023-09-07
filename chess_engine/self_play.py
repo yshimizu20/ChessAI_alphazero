@@ -5,7 +5,8 @@ import random
 
 from chess_engine.model.model import ChessModel
 from chess_engine.utils.state import createStateObj
-from chess_engine.utils.dataloader import DataLoader, TestLoader
+from chess_engine.utils.dataloader import TestLoader
+from chess_engine.utils.utils import uci_dict, uci_table
 
 # Hyperparameters
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -13,13 +14,12 @@ lr = 0.001
 batch_size = 200
 num_games = 200
 
-testing_iterator = TestLoader("filtered/db2023.pgn")
+testing_iterator = TestLoader("datasets/validation/lichess_elite_2023-07.pgn")
 
 
-def train(
+def self_play(
     start_epoch=0,
     end_epoch=5000,
-    data_source="dataset",
     model_path=None,
 ):
     model = ChessModel()
@@ -36,7 +36,7 @@ def train(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for epoch in range(start_epoch, end_epoch):
-        X, y, win = self_play(model)
+        X, y, win = play_game(model)
 
         X = torch.stack(X, dim=0).to(device)
         y = torch.stack(y, dim=0).to(device)
@@ -90,7 +90,7 @@ def train(
             torch.save(model.state_dict(), f"saved_models/model_{epoch + 1}.pt")
 
 
-def self_play(model):
+def play_game(model):
     data = []
 
     for i in range(num_games):
@@ -101,28 +101,30 @@ def self_play(model):
             state = createStateObj(board)
             states.append(state)
 
-            legal_moves = board.legal_moves
             legal_mask = torch.zeros(1968, dtype=torch.float32)
-            for move in legal_moves:
-                legal_mask[move.from_square * 64 + move.to_square] = 1.0
+            for move in board.legal_moves:
+                legal_mask[uci_dict[move.uci()]] = 1.0
 
             policy, _ = model(state.unsqueeze(0).to(device))
+            policy = policy * legal_mask.to(device)
             # select top 10 moves
-            top10 = torch.topk(policy, 10)[1]
+            top10 = torch.topk(policy, 10)[1][0].cpu().tolist()
+            top10_moves = [uci_table[move] for move in top10]
 
             # select best move based on value network
             best_move = None
             best_value = -10
-            for move in top10:
-                board.push(move)
-                _, value = model(createStateObj(board))
+            for move in top10_moves:
+                board.push_uci(move)
+                _, value = model(createStateObj(board).unsqueeze(0).to(device))
                 if value > best_value:
                     best_move = move
                     best_value = value
                 board.pop()
 
             moves.append(best_move)
-            board.push(best_move)
+            board.push_uci(best_move)
+            print("Move:", best_move)
 
         # get winner
         winner = 0.0

@@ -11,7 +11,7 @@ class ChessModel(nn.Module):
         self.bn_input = nn.BatchNorm2d(128)
         self.relu_input = nn.ReLU()
 
-        self.res_layers = nn.ModuleList([self.residual_layer() for _ in range(5)])
+        self.res_layers = nn.ModuleList([self.residual_layer() for _ in range(7)])
 
         self.conv_policy = nn.Conv2d(128, 2, 1)
         self.bn_policy = nn.BatchNorm2d(2)
