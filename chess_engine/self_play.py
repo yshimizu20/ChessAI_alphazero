@@ -13,11 +13,6 @@ lr = 0.001
 batch_size = 200
 num_games = 200
 
-training_iterators = [
-    DataLoader(f"filtered/output-{year}_{month:02d}.pgn")
-    for year in range(2015, 2018)
-    for month in range(1, 13)
-]
 testing_iterator = TestLoader("filtered/db2023.pgn")
 
 
@@ -40,19 +35,8 @@ def train(
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    training_idx = 0
-
     for epoch in range(start_epoch, end_epoch):
-        if data_source == "self-play":
-            X, y, win = self_play(model)
-        elif data_source == "dataset":
-            try:
-                X, y, win = training_iterators[training_idx].get_data(200)
-            except StopIteration:
-                training_idx += 1
-                if training_idx == len(training_iterators):
-                    training_idx = 0
-                continue
+        X, y, win = self_play(model)
 
         X = torch.stack(X, dim=0).to(device)
         y = torch.stack(y, dim=0).to(device)
