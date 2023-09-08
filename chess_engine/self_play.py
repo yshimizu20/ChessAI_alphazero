@@ -7,12 +7,14 @@ from chess_engine.model.model import ChessModel
 from chess_engine.utils.state import createStateObj
 from chess_engine.utils.dataloader import TestLoader
 from chess_engine.utils.utils import uci_dict, uci_table
+from chess_engine.mcts import MCTSAgent
 
 # Hyperparameters
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 lr = 0.001
 batch_size = 200
 num_games = 200
+MAX_MOVES = 150
 
 testing_iterator = TestLoader("datasets/validation/lichess_elite_2023-07.pgn")
 
@@ -27,6 +29,8 @@ def self_play(
         model.load_state_dict(torch.load(model_path))
     model.to(device)
 
+    agent = MCTSAgent(model)
+
     num_epochs = end_epoch - start_epoch
     log_path = f"log_{start_epoch}.txt"
 
@@ -36,7 +40,7 @@ def self_play(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for epoch in range(start_epoch, end_epoch):
-        X, y, win = play_game(model)
+        X, y, win = play_game(agent)
 
         X = torch.stack(X, dim=0).to(device)
         y = torch.stack(y, dim=0).to(device)
@@ -90,41 +94,23 @@ def self_play(
             torch.save(model.state_dict(), f"saved_models/model_{epoch + 1}.pt")
 
 
-def play_game(model):
+def play_game(agent):
     data = []
 
     for i in range(num_games):
-        board = chess.Board()
+        game = chess.pgn.Game()
+        board = game.board()
         states, moves = [], []
+        n_moves = 0
 
-        while not board.is_game_over():
-            state = createStateObj(board)
-            states.append(state)
-
-            legal_mask = torch.zeros(1968, dtype=torch.float32)
-            for move in board.legal_moves:
-                legal_mask[uci_dict[move.uci()]] = 1.0
-
-            policy, _ = model(state.unsqueeze(0).to(device))
-            policy = policy * legal_mask.to(device)
-            # select top 10 moves
-            top10 = torch.topk(policy, 10)[1][0].cpu().tolist()
-            top10_moves = [uci_table[move] for move in top10]
-
-            # select best move based on value network
-            best_move = None
-            best_value = -10
-            for move in top10_moves:
-                board.push_uci(move)
-                _, value = model(createStateObj(board).unsqueeze(0).to(device))
-                if value > best_value:
-                    best_move = move
-                    best_value = value
-                board.pop()
+        while not board.is_game_over() and n_moves < MAX_MOVES:
+            # select best move based on MCTS
+            best_move = agent.action(game, board)
 
             moves.append(best_move)
             board.push_uci(best_move)
             print("Move:", best_move)
+            n_moves += 1
 
         # get winner
         winner = 0.0
@@ -136,6 +122,8 @@ def play_game(model):
         # add to data
         for i in range(len(states)):
             data.append((states[i], moves[i], winner))
+
+        print("game reached end. Result: ", board.result())
 
     random.shuffle(data)
     X, y, win = zip(*data)
