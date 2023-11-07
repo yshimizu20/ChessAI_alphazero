@@ -10,115 +10,170 @@ from chess_engine.utils.state import createStateObj
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-class Visits:
+class MCTSNode:
     def __init__(self):
-        self.a = defaultdict(Actions)
-        self.sum_n = 0
+        self.actions = defaultdict(MCTSNode)
+        self.expanded = False
+        self.p_arr = None
 
-
-class Actions:
-    def __init__(self):
         self.n = 0
         self.w = 0
-        self.q = 0
         self.p = 0
+        self.q = 0
 
 
 class MCTSAgent:
     def __init__(self, chess_net):
-        self.tree = defaultdict(Visits)
+        self.tree = defaultdict(MCTSNode)
         self.chess_net = chess_net
 
-
-    def reset(self):
-        self.tree = defaultdict(Visits)
-
+    def _reset(self):
+        self.tree = defaultdict(MCTSNode)
 
     def action(self, game, board):
-        self.reset()
-        val = self._search_moves(board)
+        # reset the tree
+        self._reset()
+
+        # add root node to the tree
+        self._expand_root(board)
+
+        # populate self.tree with the MCTS algorithm
+        self._populate_tree(board)
+
         policy = self._calc_policy(board)
-        my_action = int(np.random.choice(range(1968), p=self._apply_temperature(policy, len(list(game.mainline_moves())))))
+
+        my_action = int(
+            np.random.choice(
+                range(1968),
+                p=self._apply_temperature(policy, len(list(game.mainline_moves()))),
+            )
+        )
 
         return uci_table[my_action]
 
-
-    def _search_moves(self, board):
+    def _populate_tree(self, board) -> int:
         vals = []
+
         for _ in range(8000):
-            vals.append(self._search_my_moves(board.copy(), True))
+            vals.append(self._search_moves(board.copy(), True))
 
         return max(vals)
 
-
-    def _search_my_moves(self, board, is_root=False):
+    def _search_moves(self, board, is_root=False):
         if board.is_game_over():
             res = 0.0
+
             if board.result() == "1-0":
                 res = 1.0
             elif board.result() == "0-1":
                 res = -1.0
+
             return res
 
         board_str = board.fen()
 
         if board_str not in self.tree:
-            leaf_p, leaf_v = self._expand(board)
-            self.tree[board_str].p = leaf_p.squeeze().numpy()
-            return leaf_v
+            raise ZeroDivisionError
+
+        if not self.tree[board_str].expanded:
+            self._expand(board)
+            return self.tree[board_str].q
 
         action_t = self._select_action(board, is_root)
+
         virtual_loss = 3
         is_white = 1 if board.turn == chess.WHITE else -1
         visit_stats = self.tree[board_str]
-        my_stats = visit_stats.a[action_t]
+        my_stats = visit_stats.actions[action_t]
 
-        visit_stats.sum_n += virtual_loss
         my_stats.n += virtual_loss
         my_stats.w -= virtual_loss * is_white
         my_stats.q = my_stats.w / my_stats.n * is_white
-    
-        board.push_uci(action_t.uci())
-        leaf_v = self._search_my_moves(board)
 
-        visit_stats.sum_n += virtual_loss + 1
+        board.push_uci(action_t.uci())
+        leaf_v = self._search_moves(board)
+
         my_stats.n += -virtual_loss + 1
         my_stats.w += virtual_loss * is_white + leaf_v
         my_stats.q = my_stats.w / my_stats.n * is_white
 
         return leaf_v
 
+    def _expand(self, board) -> None:
+        board_str = board.fen()
+        legal_moves = list(board.legal_moves)
 
-    def _expand(self, board):
+        # get all legal moves and the resulting board states
+        boards = []
+
+        for move in legal_moves:
+            board.push(move)
+            boards.append(board.copy())
+            board.pop()
+
+        # get the state representation of the board states
+        board_states = [
+            createStateObj(next_board).unsqueeze(0).to(device) for next_board in boards
+        ]
+
+        # get the policy and value predictions
+        self.chess_net.eval()
+        with torch.no_grad():
+            leaf_p, leaf_v = self.chess_net(torch.cat(board_states, dim=0))
+        del board_states
+
+        # convert the policy and value predictions to numpy
+        leaf_p = leaf_p.cpu().numpy()
+        leaf_v = leaf_v.cpu().numpy()
+
+        # add the newly expanded nodes to the tree
+        for move, p_arr, val, next_board in zip(legal_moves, leaf_p, leaf_v, boards):
+            self.tree[board_str].actions[move].p = self.tree[board_str].p_arr[
+                uci_dict[str(move)]
+            ]
+            self.tree[board_str].actions[move].q = val
+            self.tree[next_board.fen()].p_arr = p_arr
+
+        # set the expanded flag to True
+        self.tree[board_str].expanded = True
+
+    def _expand_root(self, board) -> None:
+        # add the current board to the tree
         state = createStateObj(board).unsqueeze(0).to(device)
-        
+
+        # get the policy and value predictions for all possible next board states
         self.chess_net.eval()
         with torch.no_grad():
             leaf_p, leaf_v = self.chess_net(state)
         del state
+
+        # collect policy predictions
         leaf_p = leaf_p.cpu()
-        leaf_v = leaf_v.cpu().item()
-
-        return leaf_p, leaf_v
-
+        self.tree[board.fen()].p_arr = leaf_p.squeeze().numpy()
 
     def _select_action(self, board, is_root=False):
         board_str = board.fen()
         visit_stats = self.tree[board_str]
 
-        if visit_stats.p is not None:
+        if visit_stats.p_arr is not None:
             tot_p = 1e-8
+
             for mv in board.legal_moves:
-                mv_p = visit_stats.p[uci_dict[str(mv)]]
-                visit_stats.a[mv].p = mv_p
+                mv_p = visit_stats.p_arr[uci_dict[str(mv)]]
+                visit_stats.actions[mv].p = mv_p
                 tot_p += mv_p
-            for a_s in visit_stats.a.values():
+
+            for a_s in visit_stats.actions.values():
                 a_s.p /= tot_p
+
             visit_stats.p = None
 
-        xx = np.sqrt(visit_stats.sum_n + 1)
+        else:
+            raise ZeroDivisionError
 
-        e = 0 # noise epsilon
+        xx = np.sqrt(visit_stats.n + 1)
+
+        e = 0  # noise epsilon
         c_puct = 1.5
         dir_alpha = 0.3
 
@@ -126,21 +181,24 @@ class MCTSAgent:
         best_a = None
 
         if is_root:
-            noise = np.random.dirichlet([dir_alpha] * len(visit_stats.a))
-        
+            noise = np.random.dirichlet([dir_alpha] * len(visit_stats.actions))
+
         i = 0
-        for action, a_s in visit_stats.a.items():
+
+        for action, a_s in visit_stats.actions.items():
             p = a_s.p
+
             if is_root:
-                p = (1-e) * p + e * noise[i]
+                p = (1 - e) * p + e * noise[i]
                 i += 1
+
             b = a_s.q + c_puct * p * xx / (1 + a_s.n)
+
             if b > best_s:
                 best_s = b
                 best_a = action
 
         return best_a
-
 
     def _apply_temperature(self, policy, turn):
         tau = np.power(0.99, turn + 1)
@@ -152,19 +210,19 @@ class MCTSAgent:
             action = np.argmax(policy)
             ret = np.zeros(1968)
             ret[action] = 1.0
-        else:
-            ret = np.power(policy, 1/tau)
-            ret /= np.sum(ret)
-        
-        return ret
 
+        else:
+            ret = np.power(policy, 1 / tau)
+            ret /= np.sum(ret)
+
+        return ret
 
     def _calc_policy(self, board):
         board_str = board.fen()
         visit_stats = self.tree[board_str]
         policy = np.zeros(1968)
 
-        for action, a_s in visit_stats.a.items():
+        for action, a_s in visit_stats.actions.items():
             policy[uci_dict[str(action)]] = a_s.n
 
         policy /= np.sum(policy)
