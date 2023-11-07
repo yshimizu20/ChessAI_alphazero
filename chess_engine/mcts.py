@@ -23,6 +23,9 @@ class MCTSNode:
 
 
 class MCTSAgent:
+    WHITE = 1
+    BLACK = -1
+
     def __init__(self, chess_net):
         self.tree = defaultdict(MCTSNode)
         self.chess_net = chess_net
@@ -71,18 +74,22 @@ class MCTSAgent:
             return res
 
         board_str = board.fen()
+        is_white = MCTSAgent.WHITE if board.turn == chess.WHITE else MCTSAgent.BLACK
 
         if board_str not in self.tree:
             raise ZeroDivisionError
 
         if not self.tree[board_str].expanded:
-            self._expand(board)
-            return self.tree[board_str].q
+            leaf_v = self._expand(board)
+
+            if is_white == MCTSAgent.WHITE:
+                return max(leaf_v)
+            else:
+                return min(leaf_v)
 
         action_t = self._select_action(board, is_root)
 
         virtual_loss = 3
-        is_white = 1 if board.turn == chess.WHITE else -1
         visit_stats = self.tree[board_str]
         my_stats = visit_stats.actions[action_t]
 
@@ -99,7 +106,7 @@ class MCTSAgent:
 
         return leaf_v
 
-    def _expand(self, board) -> None:
+    def _expand(self, board) -> np.ndarray:
         board_str = board.fen()
         legal_moves = list(board.legal_moves)
 
@@ -137,6 +144,8 @@ class MCTSAgent:
         # set the expanded flag to True
         self.tree[board_str].expanded = True
 
+        return leaf_v
+
     def _expand_root(self, board) -> None:
         # add the current board to the tree
         state = createStateObj(board).unsqueeze(0).to(device)
@@ -144,14 +153,14 @@ class MCTSAgent:
         # get the policy and value predictions for all possible next board states
         self.chess_net.eval()
         with torch.no_grad():
-            leaf_p, leaf_v = self.chess_net(state)
+            leaf_p, _ = self.chess_net(state)
         del state
 
         # collect policy predictions
         leaf_p = leaf_p.cpu()
         self.tree[board.fen()].p_arr = leaf_p.squeeze().numpy()
 
-    def _select_action(self, board, is_root=False):
+    def _select_action(self, board, is_root=False) -> chess.Move:
         board_str = board.fen()
         visit_stats = self.tree[board_str]
 
@@ -166,10 +175,7 @@ class MCTSAgent:
             for a_s in visit_stats.actions.values():
                 a_s.p /= tot_p
 
-            visit_stats.p = None
-
-        else:
-            raise ZeroDivisionError
+            visit_stats.p_arr = None
 
         xx = np.sqrt(visit_stats.n + 1)
 
@@ -200,7 +206,7 @@ class MCTSAgent:
 
         return best_a
 
-    def _apply_temperature(self, policy, turn):
+    def _apply_temperature(self, policy, turn) -> np.ndarray:
         tau = np.power(0.99, turn + 1)
 
         if tau < 0.1:
@@ -217,7 +223,7 @@ class MCTSAgent:
 
         return ret
 
-    def _calc_policy(self, board):
+    def _calc_policy(self, board) -> np.ndarray:
         board_str = board.fen()
         visit_stats = self.tree[board_str]
         policy = np.zeros(1968)
