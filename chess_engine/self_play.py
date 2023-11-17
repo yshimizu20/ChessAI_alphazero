@@ -3,6 +3,7 @@ import torch.nn as nn
 import chess
 import random
 import os
+from concurrent.futures import ProcessPoolExecutor
 
 from chess_engine.model.model import ChessModel
 from chess_engine.utils.state import createStateObj
@@ -33,23 +34,24 @@ def self_play(
 
     for epoch in range(start_epoch, end_epoch):
         # initialize model
-        model = ChessModel()
-        if model_path is not None:
-            model.load_state_dict(torch.load(model_path))
-        model.to(device)
-
-        # initialize agent
-        agent = MCTSAgent(model)
-
-        # initialize optimizer
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        if model_path is None:
+            # initialize model and save weights
+            model = ChessModel()
+            new_model_path = f"saved_models/model_0.pt"
+            torch.save(model.state_dict(), new_model_path)
+            model_path = new_model_path
+            os.system(f"cp {model_path} saved_models/current_best")
+            del model
 
         X, y, win = [], [], []
-        N_GAMES = 1
+        N_GAMES = 2
+        args = [(model_path, model_path, 1, i + 1) for i in range(N_GAMES)]
 
-        # collect data from playing N_GAMES
-        for round in range(N_GAMES):
-            X_batch, y_batch, win_batch, _ = play_game(agent, agent)
+        with ProcessPoolExecutor(max_workers=2) as executor:
+            results = executor.map(play_games_async, *zip(*args))
+
+        for result in results:
+            X_batch, y_batch, win_batch, _ = result
 
             X += X_batch
             y += y_batch
@@ -58,6 +60,14 @@ def self_play(
         X = torch.stack(X, dim=0).to(device)
         y = torch.stack(y, dim=0).to(device)
         win = torch.stack(win).unsqueeze(1).to(device)
+
+        # initialize model
+        model = ChessModel()
+        model.load_state_dict(torch.load(model_path))
+        model.to(device)
+
+        # initialize optimizer
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
         # train model
         model.train()
@@ -99,7 +109,7 @@ def self_play(
                 # empty the models/current_best folder
                 for f in os.listdir("saved_models/current_best"):
                     os.remove(os.path.join("saved_models/current_best", f))
-                
+
                 # copy the new model to models/current_best
                 os.system(f"cp {model_path} saved_models/current_best")
 
@@ -129,7 +139,7 @@ def self_play(
             torch.save(model.state_dict(), f"saved_models/model_{epoch + 1}.pt")
 
 
-def play_game(agent1, agent2):
+def play_game(agent1, agent2, id_=None):
     """
     Play one game of chess and return the generated data
     """
@@ -149,7 +159,12 @@ def play_game(agent1, agent2):
 
         moves.append(best_move)
         board.push_uci(best_move)
-        print("Move:", best_move)
+
+        if id_ is not None:
+            print(f"Process {id_} Move No. {n_moves} - {best_move}")
+        else:
+            print(f"Move No. {n_moves} - {best_move}")
+
         n_moves += 1
 
     # get winner
@@ -170,6 +185,36 @@ def play_game(agent1, agent2):
     print("game reached end. Result: ", board.result())
 
     X, y, win = zip(*data)
+
+    return X, y, win, winner
+
+
+def play_games_async(model_path1, model_path2, n_games=1, id_=None):
+    model1 = ChessModel()
+    if model_path1 is not None:
+        model1.load_state_dict(torch.load(model_path1))
+    model1.to(device)
+
+    model2 = ChessModel()
+    if model_path2 is not None:
+        model2.load_state_dict(torch.load(model_path2))
+    model2.to(device)
+
+    agent1 = MCTSAgent(model1)
+    agent2 = MCTSAgent(model2)
+
+    print(f"Process {id_} playing {n_games} games")
+
+    X, y, win, winner = [], [], [], []
+
+    for _ in range(n_games):
+        X_batch, y_batch, win_batch, winner_batch = play_game(agent1, agent2, id_)
+
+        X += X_batch
+        y += y_batch
+        win += win_batch
+        winner += winner_batch
+
     return X, y, win, winner
 
 

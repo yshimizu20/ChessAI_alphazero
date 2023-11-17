@@ -1,7 +1,11 @@
 import os
+import torch
+
 from chess_engine.self_play import self_play
 
 if __name__ == "__main__":
+    torch.multiprocessing.set_start_method('spawn')
+
     # find the latest model
     model_path = "saved_models/current_best/"
     model_files = os.listdir(model_path)
