@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import chess
 import random
+import os
 
 from chess_engine.model.model import ChessModel
 from chess_engine.utils.state import createStateObj
@@ -24,40 +25,50 @@ def self_play(
     end_epoch=5000,
     model_path=None,
 ):
-    model = ChessModel()
-    if model_path is not None:
-        model.load_state_dict(torch.load(model_path))
-    model.to(device)
-
-    agent = MCTSAgent(model)
-
     num_epochs = end_epoch - start_epoch
     log_path = f"log_{start_epoch}.txt"
 
     policy_criterion = nn.CrossEntropyLoss()
     value_criterion = nn.MSELoss()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
     for epoch in range(start_epoch, end_epoch):
-        X, y, win = play_game(agent)
+        # initialize model
+        model = ChessModel()
+        if model_path is not None:
+            model.load_state_dict(torch.load(model_path))
+        model.to(device)
+
+        # initialize agent
+        agent = MCTSAgent(model)
+
+        # initialize optimizer
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+        X, y, win = [], [], []
+        N_GAMES = 1
+
+        # collect data from playing N_GAMES
+        for round in range(N_GAMES):
+            X_batch, y_batch, win_batch, _ = play_game(agent, agent)
+
+            X += X_batch
+            y += y_batch
+            win += win_batch
 
         X = torch.stack(X, dim=0).to(device)
         y = torch.stack(y, dim=0).to(device)
         win = torch.stack(win).unsqueeze(1).to(device)
 
+        # train model
         model.train()
+        optimizer.zero_grad()
+
         policy, value = model(X)
 
-        # train both networks
-        optimizer.zero_grad()
-        policy_loss = policy_criterion(policy, y)
-        value_loss = value_criterion(value, win)
+        loss = (value - win).pow(2).sum() - (policy * torch.log(y)).sum()
 
-        alpha = 0.5
-        beta = 0.5
-        loss = alpha * policy_loss + beta * value_loss
         loss.backward()
+
         optimizer.step()
 
         print(f"Epoch {epoch + 1} of {num_epochs}")
@@ -68,8 +79,32 @@ def self_play(
 
         del X, y, win, policy, value
 
-        if epoch % 10 == 0:
-            # evaluate
+        # save model
+        new_model_path = f"saved_models/model_{epoch + 1}.pt"
+        torch.save(model.state_dict(), new_model_path)
+        del model
+
+        if model_path is None:
+            model_path = new_model_path
+            os.system(f"cp {model_path} saved_models/current_best")
+
+        else:
+            # run 20 games against previous model
+            prev_wins, new_wins = evaluate(model_path, new_model_path, 1)
+
+            if new_wins / (prev_wins + new_wins) > 0.55:
+                # update model_path
+                model_path = new_model_path
+
+                # empty the models/current_best folder
+                for f in os.listdir("saved_models/current_best"):
+                    os.remove(os.path.join("saved_models/current_best", f))
+                
+                # copy the new model to models/current_best
+                os.system(f"cp {model_path} saved_models/current_best")
+
+        # evaluate
+        if epoch % 10 == 9:
             X, y, win = (
                 testing_iterator.X.to(device),
                 testing_iterator.y.to(device),
@@ -90,41 +125,82 @@ def self_play(
             del X, y, win, policy, value
 
         # save model
-        if epoch % 100 == 99:
+        if epoch % 10 == 9:
             torch.save(model.state_dict(), f"saved_models/model_{epoch + 1}.pt")
 
 
-def play_game(agent):
+def play_game(agent1, agent2):
+    """
+    Play one game of chess and return the generated data
+    """
+
     data = []
 
-    for i in range(num_games):
-        game = chess.pgn.Game()
-        board = game.board()
-        states, moves = [], []
-        n_moves = 0
+    game = chess.pgn.Game()
+    board = game.board()
+    states, moves = [], []
+    n_moves = 0
+    agents = random.sample([agent1, agent2], 2)
 
-        while not board.is_game_over() and n_moves < MAX_MOVES:
-            # select best move based on MCTS
-            best_move = agent.action(game, board)
+    while not board.is_game_over() and n_moves < MAX_MOVES:
+        agent = agents[n_moves % 2]
+        # select best move based on MCTS
+        best_move = agent.action(game, board)
 
-            moves.append(best_move)
-            board.push_uci(best_move)
-            print("Move:", best_move)
-            n_moves += 1
+        moves.append(best_move)
+        board.push_uci(best_move)
+        print("Move:", best_move)
+        n_moves += 1
 
-        # get winner
-        winner = 0.0
-        if board.result() == "1-0":
-            winner = 1.0
-        elif board.result() == "0-1":
-            winner = -1.0
+    # get winner
+    win_val = 0.0
+    winner = ""
 
-        # add to data
-        for i in range(len(states)):
-            data.append((states[i], moves[i], winner))
+    if board.result() == "1-0":
+        win_val = 1.0
+        winner = agents[0].name
+    elif board.result() == "0-1":
+        win_val = -1.0
+        winner = agents[1].name
 
-        print("game reached end. Result: ", board.result())
+    # add to data
+    for i in range(len(states)):
+        data.append((states[i], moves[i], win_val))
 
-    random.shuffle(data)
+    print("game reached end. Result: ", board.result())
+
     X, y, win = zip(*data)
-    return X, y, win
+    return X, y, win, winner
+
+
+def evaluate(prev_model_path, new_model_path, rounds=20):
+    """
+    Evaluate the new model against the previous model by playing rounds games
+    """
+
+    prev_model = ChessModel()
+    prev_model.load_state_dict(torch.load(prev_model_path))
+    prev_model.to(device)
+
+    new_model = ChessModel()
+    new_model.load_state_dict(torch.load(new_model_path))
+    new_model.to(device)
+
+    prev_agent = MCTSAgent(prev_model)
+    new_agent = MCTSAgent(new_model)
+
+    prev_wins, new_wins = 0, 0
+
+    curr_round = 0
+
+    while curr_round < rounds:
+        X, y, win, winner = play_game(prev_agent, new_agent)
+        if winner == prev_agent.name:
+            prev_wins += 1
+        elif winner == new_agent.name:
+            new_wins += 1
+        curr_round += 1
+
+    print(f"Previous Model Wins: {prev_wins}, New Model Wins: {new_wins}")
+
+    return prev_wins, new_wins

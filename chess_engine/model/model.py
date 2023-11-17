@@ -7,9 +7,12 @@ import torch.utils.checkpoint as checkpoint
 class ChessModel(nn.Module):
     def __init__(self):
         super(ChessModel, self).__init__()
-        self.conv_input = nn.Conv2d(35, 128, 5, padding="same")
-        self.bn_input = nn.BatchNorm2d(128)
-        self.relu_input = nn.ReLU()
+        self.conv_input1 = nn.Conv2d(19, 64, 3, padding="same")
+        self.bn_input1 = nn.BatchNorm2d(64)
+        self.relu_input1 = nn.ReLU()
+        self.conv_input2 = nn.Conv2d(64, 128, 3, padding="same")
+        self.bn_input2 = nn.BatchNorm2d(128)
+        self.relu_input2 = nn.ReLU()
 
         self.res_layers = nn.ModuleList([self.residual_layer() for _ in range(7)])
 
@@ -37,9 +40,12 @@ class ChessModel(nn.Module):
         )
 
     def forward(self, x):
-        x = self.conv_input(x)
-        x = self.bn_input(x)
-        x = self.relu_input(x)
+        x = self.conv_input1(x)
+        x = self.bn_input1(x)
+        x = self.relu_input1(x)
+        x = self.conv_input2(x)
+        x = self.bn_input2(x)
+        x = self.relu_input2(x)
 
         for layer in self.res_layers:
             # x = self.relu_input(layer(x) + x)

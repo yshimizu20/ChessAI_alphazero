@@ -3,7 +3,7 @@ from chess_engine.self_play import self_play
 
 if __name__ == "__main__":
     # find the latest model
-    model_path = "saved_models"
+    model_path = "saved_models/current_best/"
     model_files = os.listdir(model_path)
 
     if len(model_files) == 0:

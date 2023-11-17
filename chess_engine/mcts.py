@@ -26,9 +26,10 @@ class MCTSAgent:
     WHITE = 1
     BLACK = -1
 
-    def __init__(self, chess_net):
+    def __init__(self, chess_net, name="No Name"):
         self.tree = defaultdict(MCTSNode)
         self.chess_net = chess_net
+        self.name = name
 
     def _reset(self):
         self.tree = defaultdict(MCTSNode)
@@ -57,7 +58,7 @@ class MCTSAgent:
     def _populate_tree(self, board) -> int:
         vals = []
 
-        for _ in range(8000):
+        for _ in range(800):
             vals.append(self._search_moves(board.copy(), True))
 
         return max(vals)
