@@ -29,6 +29,8 @@ class ChessModel(nn.Module):
         self.fc_value1 = nn.Linear(8 * 8 * 4, 32)
         self.fc_value2 = nn.Linear(32, 1)
 
+        self._init_weights()
+
     def residual_layer(self):
         return nn.Sequential(
             nn.Conv2d(128, 128, 3, padding="same"),
@@ -38,6 +40,25 @@ class ChessModel(nn.Module):
             nn.BatchNorm2d(128),
             nn.ReLU(),
         )
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+        nan_found = False
+        for name, param in self.named_parameters():
+            if torch.isnan(param).any() or torch.isinf(param).any():
+                print(f"NaN or Inf found in parameter: {name}")
+                nan_found = True
+
+        if nan_found:
+            raise ValueError("NaN or Inf found in parameters")
 
     def forward(self, x):
         x = self.conv_input1(x)

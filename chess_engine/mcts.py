@@ -33,6 +33,8 @@ class MCTSAgent:
 
     def _reset(self):
         self.tree = defaultdict(MCTSNode)
+        print("tree reset")
+        print("tree size:", len(self.tree))
 
     def action(self, game, board):
         # reset the tree
@@ -53,7 +55,7 @@ class MCTSAgent:
             )
         )
 
-        return uci_table[my_action]
+        return uci_table[my_action], policy
 
     def _populate_tree(self, board) -> int:
         vals = []
@@ -97,6 +99,7 @@ class MCTSAgent:
         my_stats.n += virtual_loss
         my_stats.w -= virtual_loss * is_white
         my_stats.q = my_stats.w / my_stats.n * is_white
+        # print("checkpoint 1:", my_stats.q)
 
         board.push_uci(action_t.uci())
         leaf_v = self._search_moves(board)
@@ -139,7 +142,7 @@ class MCTSAgent:
             self.tree[board_str].actions[move].p = self.tree[board_str].p_arr[
                 uci_dict[str(move)]
             ]
-            self.tree[board_str].actions[move].q = val
+            self.tree[board_str].actions[move].q = val.item()
             self.tree[next_board.fen()].p_arr = p_arr
 
         # set the expanded flag to True
@@ -192,6 +195,8 @@ class MCTSAgent:
 
         i = 0
 
+        bs = []
+
         for action, a_s in visit_stats.actions.items():
             p = a_s.p
 
@@ -201,9 +206,18 @@ class MCTSAgent:
 
             b = a_s.q + c_puct * p * xx / (1 + a_s.n)
 
+            bs.append([a_s.q, p, xx, a_s.n, b])
+
             if b > best_s:
                 best_s = b
                 best_a = action
+
+        try:
+            assert best_a is not None
+        except AssertionError:
+            print(len(visit_stats.actions.items()))
+            print("bs:", bs)
+            raise ZeroDivisionError
 
         return best_a
 

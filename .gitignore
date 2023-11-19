@@ -6,3 +6,4 @@ datasets
 .DS_Store
 log*.txt
 __pycache__
+output*.txt

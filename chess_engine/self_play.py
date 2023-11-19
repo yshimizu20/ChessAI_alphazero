@@ -44,10 +44,10 @@ def self_play(
             del model
 
         X, y, win = [], [], []
-        N_GAMES = 2
-        args = [(model_path, model_path, 1, i + 1) for i in range(N_GAMES)]
+        N_GAMES = 3
+        args = [(model_path, model_path, 1, i + 1, log_path) for i in range(N_GAMES)]
 
-        with ProcessPoolExecutor(max_workers=2) as executor:
+        with ProcessPoolExecutor(max_workers=3) as executor:
             results = executor.map(play_games_async, *zip(*args))
 
         for result in results:
@@ -59,12 +59,14 @@ def self_play(
 
         X = torch.stack(X, dim=0).to(device)
         y = torch.stack(y, dim=0).to(device)
-        win = torch.stack(win).unsqueeze(1).to(device)
+        win = torch.tensor(win).unsqueeze(1).to(device)
 
         # initialize model
         model = ChessModel()
         model.load_state_dict(torch.load(model_path))
         model.to(device)
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         # initialize optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -75,28 +77,42 @@ def self_play(
 
         policy, value = model(X)
 
-        loss = (value - win).pow(2).sum() - (policy * torch.log(y)).sum()
+        loss = (value - win).pow(2).sum() - (y * torch.log(policy)).sum()
 
         loss.backward()
 
         optimizer.step()
 
+        optimizer.zero_grad()
+
         print(f"Epoch {epoch + 1} of {num_epochs}")
-        print(f"Policy Loss: {policy_loss}, Value Loss: {value_loss}")
-        with open(log_path, "a") as fp:
-            fp.write(f"Epoch {epoch + 1} of {num_epochs}\n")
-            fp.write(f"Policy Loss: {policy_loss}, Value Loss: {value_loss}\n")
+        # print(f"Policy Loss: {policy_loss}, Value Loss: {value_loss}")
+        # with open(log_path, "a") as fp:
+        #     fp.write(f"Epoch {epoch + 1} of {num_epochs}\n")
+        #     fp.write(f"Policy Loss: {policy_loss}, Value Loss: {value_loss}\n")
 
         del X, y, win, policy, value
 
         # save model
         new_model_path = f"saved_models/model_{epoch + 1}.pt"
         torch.save(model.state_dict(), new_model_path)
+
+        # debug
+        nan_found = False
+        for name, param in model.named_parameters():
+            if torch.isnan(param).any():
+                print(f"NaNs found in parameter: {name}")
+                nan_found = True
+
+        assert nan_found == False
+
         del model
 
         if model_path is None:
-            model_path = new_model_path
-            os.system(f"cp {model_path} saved_models/current_best")
+            # control flow should not come here
+            raise ZeroDivisionError
+            # model_path = new_model_path
+            # os.system(f"cp {model_path} saved_models/current_best")
 
         else:
             # run 20 games against previous model
@@ -139,7 +155,7 @@ def self_play(
             torch.save(model.state_dict(), f"saved_models/model_{epoch + 1}.pt")
 
 
-def play_game(agent1, agent2, id_=None):
+def play_game(agent1, agent2, id_=None, log_path=None):
     """
     Play one game of chess and return the generated data
     """
@@ -155,15 +171,23 @@ def play_game(agent1, agent2, id_=None):
     while not board.is_game_over() and n_moves < MAX_MOVES:
         agent = agents[n_moves % 2]
         # select best move based on MCTS
-        best_move = agent.action(game, board)
+        best_move, policy = agent.action(game, board)
 
-        moves.append(best_move)
+        states.append(createStateObj(board))
+        policy = torch.tensor(policy).unsqueeze(0)
+        moves.append(policy)
         board.push_uci(best_move)
 
         if id_ is not None:
             print(f"Process {id_} Move No. {n_moves} - {best_move}")
+            if log_path is not None:
+                with open(log_path, "a") as fp:
+                    fp.write(f"Process {id_} Move No. {n_moves} - {best_move}\n")
         else:
             print(f"Move No. {n_moves} - {best_move}")
+            if log_path is not None:
+                with open(log_path, "a") as fp:
+                    fp.write(f"Move No. {n_moves} - {best_move}\n")
 
         n_moves += 1
 
@@ -178,18 +202,14 @@ def play_game(agent1, agent2, id_=None):
         win_val = -1.0
         winner = agents[1].name
 
-    # add to data
-    for i in range(len(states)):
-        data.append((states[i], moves[i], win_val))
-
     print("game reached end. Result: ", board.result())
 
-    X, y, win = zip(*data)
+    X, y, win = states, moves, [win_val for _ in range(len(states))]
 
     return X, y, win, winner
 
 
-def play_games_async(model_path1, model_path2, n_games=1, id_=None):
+def play_games_async(model_path1, model_path2, n_games=1, id_=None, log_path=None):
     model1 = ChessModel()
     if model_path1 is not None:
         model1.load_state_dict(torch.load(model_path1))
@@ -208,7 +228,13 @@ def play_games_async(model_path1, model_path2, n_games=1, id_=None):
     X, y, win, winner = [], [], [], []
 
     for _ in range(n_games):
-        X_batch, y_batch, win_batch, winner_batch = play_game(agent1, agent2, id_)
+        X_batch, y_batch, win_batch, winner_batch = play_game(
+            agent1, agent2, id_, log_path
+        )
+
+        # during training, we only want to keep the games where there is a winner
+        if winner_batch == "":
+            continue
 
         X += X_batch
         y += y_batch
@@ -223,6 +249,11 @@ def evaluate(prev_model_path, new_model_path, rounds=20):
     Evaluate the new model against the previous model by playing rounds games
     """
 
+    print(prev_model_path, new_model_path)
+
+    assert prev_model_path is not None
+    assert new_model_path is not None
+
     prev_model = ChessModel()
     prev_model.load_state_dict(torch.load(prev_model_path))
     prev_model.to(device)
@@ -231,8 +262,31 @@ def evaluate(prev_model_path, new_model_path, rounds=20):
     new_model.load_state_dict(torch.load(new_model_path))
     new_model.to(device)
 
-    prev_agent = MCTSAgent(prev_model)
-    new_agent = MCTSAgent(new_model)
+    nan_found = False
+    for name, param in prev_model.named_parameters():
+        if torch.isnan(param).any():
+            print(f"NaNs found in parameter: {name}")
+            nan_found = True
+
+    if nan_found:
+        print("NaNs found in previous model. Exiting...")
+    else:
+        print("No NaNs found in previous model")
+
+    nan_found = False
+    for name, param in new_model.named_parameters():
+        if torch.isnan(param).any():
+            print(f"NaNs found in parameter: {name}")
+            nan_found = True
+
+    if nan_found:
+        print("NaNs found in new model. Exiting...")
+        exit(1)
+    else:
+        print("No NaNs found in new model")
+
+    prev_agent = MCTSAgent(prev_model, "Previous Model")
+    new_agent = MCTSAgent(new_model, "New Model")
 
     prev_wins, new_wins = 0, 0
 
@@ -244,6 +298,9 @@ def evaluate(prev_model_path, new_model_path, rounds=20):
             prev_wins += 1
         elif winner == new_agent.name:
             new_wins += 1
+        else:
+            continue
+
         curr_round += 1
 
     print(f"Previous Model Wins: {prev_wins}, New Model Wins: {new_wins}")
