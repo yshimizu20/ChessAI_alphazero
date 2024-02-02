@@ -8,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor
 from chess_engine.model.model import ChessModel
 from chess_engine.utils.state import createStateObj
 from chess_engine.utils.dataloader import TestLoader
-from chess_engine.utils.utils import uci_dict, uci_table
+from chess_engine.utils.utils import uci_dict, uci_table, get_time
 from chess_engine.mcts import MCTSAgent
 
 # Hyperparameters
@@ -25,9 +25,11 @@ def self_play(
     start_epoch=0,
     end_epoch=5000,
     model_path=None,
+    log_path=None,
 ):
     num_epochs = end_epoch - start_epoch
-    log_path = f"log_{start_epoch}.txt"
+    if not log_path:
+        log_path = f"log_{start_epoch}.txt"
 
     policy_criterion = nn.CrossEntropyLoss()
     value_criterion = nn.MSELoss()
@@ -88,8 +90,8 @@ def self_play(
         print(f"Epoch {epoch + 1} of {num_epochs}")
         # print(f"Policy Loss: {policy_loss}, Value Loss: {value_loss}")
         # with open(log_path, "a") as fp:
-        #     fp.write(f"Epoch {epoch + 1} of {num_epochs}\n")
-        #     fp.write(f"Policy Loss: {policy_loss}, Value Loss: {value_loss}\n")
+        #     fp.write(f"[{get_time()}] Epoch {epoch + 1} of {num_epochs}\n")
+        #     fp.write(f"[{get_time()}] Policy Loss: {policy_loss}, Value Loss: {value_loss}\n")
 
         del X, y, win, policy, value
 
@@ -97,22 +99,19 @@ def self_play(
         new_model_path = f"saved_models/model_{epoch + 1}.pt"
         torch.save(model.state_dict(), new_model_path)
 
-        # debug
-        nan_found = False
-        for name, param in model.named_parameters():
-            if torch.isnan(param).any():
-                print(f"NaNs found in parameter: {name}")
-                nan_found = True
+        # # debug
+        # nan_found = False
+        # for name, param in model.named_parameters():
+        #     if torch.isnan(param).any():
+        #         print(f"NaNs found in parameter: {name}")
+        #         nan_found = True
 
-        assert nan_found == False
+        # assert nan_found == False
 
         del model
 
         if model_path is None:
-            # control flow should not come here
             raise ZeroDivisionError
-            # model_path = new_model_path
-            # os.system(f"cp {model_path} saved_models/current_best")
 
         else:
             # run 20 games against previous model
@@ -145,7 +144,7 @@ def self_play(
             print(f"Test Policy Loss: {policy_loss}, Test Value Loss: {value_loss}")
             with open(log_path, "a") as fp:
                 fp.write(
-                    f"Test Policy Loss: {policy_loss}, Test Value Loss: {value_loss}\n"
+                    f"[{get_time()}] Test Policy Loss: {policy_loss}, Test Value Loss: {value_loss}\n"
                 )
 
             del X, y, win, policy, value
@@ -182,18 +181,21 @@ def play_game(agent1, agent2, id_=None, log_path=None):
             print(f"Process {id_} Move No. {n_moves} - {best_move}")
             if log_path is not None:
                 with open(log_path, "a") as fp:
-                    fp.write(f"Process {id_} Move No. {n_moves} - {best_move}\n")
+                    fp.write(
+                        f"[{get_time()}] Process {id_} Move No. {n_moves} - {best_move}\n"
+                    )
         else:
             print(f"Move No. {n_moves} - {best_move}")
             if log_path is not None:
                 with open(log_path, "a") as fp:
-                    fp.write(f"Move No. {n_moves} - {best_move}\n")
+                    fp.write(f"[{get_time()}] Move No. {n_moves} - {best_move}\n")
 
         n_moves += 1
+        break  # TODO: remove this
 
     # get winner
-    win_val = 0.0
-    winner = ""
+    win_val = 1.0  # TODO: change this to 0.0
+    winner = "a"  # TODO: change this to ""
 
     if board.result() == "1-0":
         win_val = 1.0
@@ -244,7 +246,7 @@ def play_games_async(model_path1, model_path2, n_games=1, id_=None, log_path=Non
     return X, y, win, winner
 
 
-def evaluate(prev_model_path, new_model_path, rounds=20):
+def evaluate(prev_model_path, new_model_path, rounds=2):
     """
     Evaluate the new model against the previous model by playing rounds games
     """

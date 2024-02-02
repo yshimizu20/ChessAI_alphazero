@@ -32,9 +32,8 @@ class MCTSAgent:
         self.name = name
 
     def _reset(self):
+        print(f"tree reset (tree size before reset: {len(self.tree)}")  # verbose
         self.tree = defaultdict(MCTSNode)
-        print("tree reset")
-        print("tree size:", len(self.tree))
 
     def action(self, game, board):
         # reset the tree

@@ -1,3 +1,6 @@
+from datetime import datetime
+
+
 def create_uci_labels():
     """
     Creates the labels for the universal chess interface into an array and returns them
@@ -72,3 +75,7 @@ piece_values = {
     "Q": -9,
     "K": -1000,
 }
+
+
+def get_time():
+    return datetime.now().strftime("%m-%d %H:%M:%S.%f")[:22]
